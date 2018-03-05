@@ -23,7 +23,7 @@ Colocar la ruta en donde se encuentra el archivo redis_cluster_statefulsets.yaml
 
 
 
-## Pruebas de Redis-cli
+## Pruebas Redis-cli
 
 
 Para poder realizar pruebas de replica de información entre nodos realizar las siguientes acciones:
