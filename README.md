@@ -2,7 +2,7 @@
 
 Cluster redis Statefulsets
 
-## Uso local
+## Proceso de instalación Redis Cluster
 
 Ejecuta el yaml para la creación de archivos de configuración para la instalación de redis cluster puede ser dentro de la consola de 
 openshift situarse en:
