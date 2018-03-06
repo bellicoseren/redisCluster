@@ -1,0 +1,206 @@
+kind: Template
+apiVersion: v1
+metadata:
+  name: redis-petset-replication
+  annotations:
+    description: "Redis Replication (based on StatefulSet). You must have persistent volumes available in your cluster to use this template."
+    iconClass: "icon-redis"
+    tags: "database,redis,replication"
+
+parameters:
+  - name: REDIS_USER
+    displayName: "Redis Connection Username"
+    description: "Username for Redis user that will be used for accessing the database."
+    generate: expression
+    from: "[a-zA-Z0-9]{3}"
+    required: true
+
+  - name: REDIS_PASSWORD
+    displayName: "Redis Connection Password"
+    description: "Password for the Redis connection user."
+    generate: expression
+    from: "[a-zA-Z0-9]{16}"
+    required: true
+
+  - name: REDIS_DATABASE
+    displayName: "Database Service Name"
+    description: "The name of the OpenShift Service exposed for the database."
+    value: redis
+    required: true
+
+  - name: REDIS_ADMIN_PASSWORD
+    displayName: "REDIS Admin Password"
+    description: "Password for the database admin user."
+    generate: expression
+    from: "[a-zA-Z0-9]{16}"
+    required: true
+
+  - name: REDIS_REPLICA_NAME
+    displayName: "Replica Set Name"
+    description: "The name of the replica set."
+    value: rs0
+    required: true
+
+  - name: REDIS_IMAGE
+    displayName: "Redis Docker Image"
+    description: "A reference to a supported Redis Docker image."
+    value: "library/redis:3.2"
+    required: true
+
+  - name: REDIS_SERVICE_NAME
+    displayName: "OpenShift Service Name"
+    description: "The name of the OpenShift Service exposed for the database."
+    value: redis
+    required: true
+
+  - name: VOLUME_CAPACITY
+    displayName: "Volume Capacity"
+    description: "Volume space available for data, e.g. 512Mi, 2Gi."
+    value: "1Gi"
+    required: true
+
+  - name: MEMORY_LIMIT
+    displayName: "Memory Limit"
+    description: "Maximum amount of memory the container can use."
+    value: "512Mi"
+
+  - name: REDIS_VERSION
+    displayName: "Version of Redis Image"
+    description: "Version of Redis image to be used (3.2 or latest)."
+    value: "3.2"
+    required: true
+
+objects:
+  # A non-headless service which takes pod readiness into consideration
+  - kind: Service
+    apiVersion: v1
+    metadata:
+      name: "${REDIS_SERVICE_NAME}"
+      labels:
+        app: "${REDIS_SERVICE_NAME}"
+    spec:
+      # the list of ports that are exposed by this service
+      ports:
+        - name: "${REDIS_SERVICE_NAME}"
+          port: 6379
+      clusterIP: None
+      # will route traffic to pods having labels matching this selector
+      selector:
+        app: "${REDIS_SERVICE_NAME}"
+  # A headless service to create DNS records
+  - kind: Service
+    apiVersion: v1
+    metadata:
+      name: "${REDIS_SERVICE_NAME}-internal"
+      annotations:
+        service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+    spec:
+      clusterIP: None
+       # the list of ports that are exposed by this service
+      ports:
+       - name: "${REDIS_SERVICE_NAME}"
+         port: 6379
+      # will route traffic to pods having labels matching this selector
+      selector:
+      app: "${REDIS_SERVICE_NAME}"
+    # A headless service to create DNS records
+  - kind: Service
+    apiVersion: v1
+    metadata:
+       name: "${REDIS_SERVICE_NAME}"
+       annotations:
+         service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+    spec:
+        clusterIP: None
+        # the list of ports that are exposed by this service
+        ports:
+         - name: "${REDIS_SERVICE_NAME}"
+           port: 6379
+        # will route traffic to pods having labels matching this selector
+        selector:
+        name: "${REDIS_SERVICE_NAME}"
+  - kind: StatefulSet   
+    apiVersion: apps/v1beta1
+    metadata:
+      name: "${REDIS_SERVICE_NAME}"
+    spec:
+      serviceName: "${REDIS_SERVICE_NAME}"
+      replicas: 3
+      template:
+        metadata:
+          labels:
+            app: "${REDIS_SERVICE_NAME}"
+          annotations:
+            pod.beta.kubernetes.io/init-containers: '[
+              {
+                "name": "init-redis",
+                "image": "library/redis:3.2",
+                "command": ["bash", "-c", "
+                  set -ex\n
+                  [[ `hostname` =~ -([0-9]+)$ ]] || exit 1\n
+                  [[ -f /mnt/conf/redis.conf ]] && exit 0\n
+                  ordinal=${BASH_REMATCH[1]}\n
+                  # Copy appropriate conf.d files from config-map to emptyDir.\n
+                  cp /mnt/config-map/shared.conf /mnt/conf/redis.conf\n
+                  # ordinal 0 is the first host\n
+                  if [[ $ordinal -eq 0 ]]; then\n
+                    cat /mnt/config-map/master.conf >> /mnt/conf/redis.conf\n
+                  else\n
+                    cat /mnt/config-map/slave.conf >> /mnt/conf/redis.conf\n
+                  fi\n
+                "],
+                "volumeMounts": [
+                  {"name": "data", "mountPath": "/data"},
+                  {"name": "conf", "mountPath": "/mnt/conf"},
+                  {"name": "config-map", "mountPath": "/mnt/config-map"}
+                ]
+              }
+            ]'
+        spec:
+          containers:
+          - name: "${REDIS_SERVICE_NAME}"
+            command: ["redis-server", "/etc/redis/redis.conf"]
+            image: "${REDIS_IMAGE}"
+            ports:
+            - name: redis
+              containerPort: 6379
+            volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: conf
+              mountPath: /etc/redis
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+            readinessProbe:
+              exec:
+                command:
+                - sh
+                - -c
+                - "/usr/local/bin/redis-cli -h $(hostname) ping"
+              initialDelaySeconds: 15
+              timeoutSeconds: 5
+          volumes:
+          - name: config-map
+            configMap:
+              name: "${REDIS_SERVICE_NAME}"
+      volumeClaimTemplates:
+      - metadata:
+          name: data
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            limits:
+              storage: 1Gi
+            requests:
+              storage: "${VOLUME_CAPACITY}"
+      - metadata:
+          name: conf
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            limits:
+              storage: 1Gi
+            requests:
+              storage: "${VOLUME_CAPACITY}"
